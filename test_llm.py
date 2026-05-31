@@ -163,6 +163,18 @@ class LlmStreamAnswerTests(unittest.TestCase):
 
         self.assertEqual(chunks, ["오류가 발생했습니다."])
 
+    def test_stream_filter_removes_thinking_blocks_across_chunks(self) -> None:
+        chat = object.__new__(llm.QwenChat)
+        state = {"in_think": False}
+
+        chunks = [
+            chat._filter_stream_chunk("<think>\nI should not be spoken.", state),
+            chat._filter_stream_chunk(" Still hidden.</think>\n안녕하세요!", state),
+            chat._filter_stream_chunk(" 무엇을 도와드릴까요?", state),
+        ]
+
+        self.assertEqual("".join(chunks), "\n안녕하세요! 무엇을 도와드릴까요?")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -133,6 +133,29 @@ class QwenChat:
             print(traceback.format_exc())
             return response
 
+    def _filter_stream_chunk(self, chunk: str, state: dict[str, bool]) -> str:
+        output: list[str] = []
+        buffer = chunk
+        while buffer:
+            if state.get("in_think", False):
+                end = buffer.find("</think>")
+                if end == -1:
+                    return "".join(output)
+                buffer = buffer[end + len("</think>") :]
+                state["in_think"] = False
+                continue
+
+            start = buffer.find("<think>")
+            if start == -1:
+                output.append(buffer)
+                break
+
+            output.append(buffer[:start])
+            buffer = buffer[start + len("<think>") :]
+            state["in_think"] = True
+
+        return "".join(output)
+
     def _generate_text(self, prompt: str, generation_config: GenerationConfig) -> str:
         inputs = self._tokenize_prompt(prompt)
         output_ids = self.model.generate(**inputs, generation_config=generation_config)
@@ -178,7 +201,10 @@ class QwenChat:
             worker.start()
 
             emitted = False
+            filter_state = {"in_think": False}
             for chunk in streamer:
+                if chunk:
+                    chunk = self._filter_stream_chunk(chunk, filter_state)
                 if chunk:
                     emitted = True
                     yield chunk
