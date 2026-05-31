@@ -7,6 +7,8 @@ from memory import (
     DEFAULT_USER_STATE,
     RetrievedMemory,
     UserStateStore,
+    _build_heuristic_turn_summary,
+    _coerce_qdrant_point_id,
     apply_memory_patch,
     build_answer_prompt,
     build_retrieval_query,
@@ -91,7 +93,23 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("과거 결정사항 (score=0.82)", prompt)
         self.assertIn("user: AI 프로젝트야", prompt)
         self.assertIn("Reply in natural, concise spoken English by default.", prompt)
+        self.assertIn("Never use emoji", prompt)
         self.assertNotIn("한국어로 답한다", prompt)
+
+    def test_heuristic_memory_summary_does_not_require_llm_writer(self) -> None:
+        summary = _build_heuristic_turn_summary(
+            "My favorite sports player is Stephen Curry.",
+            "Stephen Curry is a legendary NBA player known for three-point shooting.",
+        )
+
+        self.assertIn("User said: My favorite sports player is Stephen Curry.", summary)
+        self.assertIn("Assistant replied:", summary)
+
+    def test_qdrant_point_id_is_uuid_compatible(self) -> None:
+        coerced = _coerce_qdrant_point_id("external-id-123")
+
+        self.assertNotEqual(coerced, "external-id-123")
+        self.assertEqual(len(coerced), 36)
 
     def test_user_state_store_round_trips_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

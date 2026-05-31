@@ -1,5 +1,6 @@
 import os
 import traceback
+import unicodedata
 import warnings
 from threading import Thread
 
@@ -17,7 +18,7 @@ TOK_MODEL_NAME = "Qwen/Qwen3-8B"
 MODEL_NAME = "ssaann/eng_conversation_sft"
 
 gen_config = GenerationConfig(
-    max_new_tokens=200,
+    max_new_tokens=80,
     do_sample=True,
     temperature=0.6,
     top_p=0.95,
@@ -40,7 +41,9 @@ BASE_SYSTEM_PROMPT = (
     "You are a friendly spoken English conversation partner and context-aware conversational AI assistant on a live voice call. "
     "Use the provided user state, retrieved memories, recent conversation, and current input. "
     "Reply in natural, concise spoken English by default. "
-    "Use Korean only when the user explicitly asks for Korean explanation or when a brief Korean clarification is necessary."
+    "Use Korean only when the user explicitly asks for Korean explanation or when a brief Korean clarification is necessary. "
+    "Never use emoji, emoticons, decorative symbols, or markdown. "
+    "Do not greet the user again unless they greet you first. Keep replies to one or two short spoken sentences."
 )
 
 
@@ -157,6 +160,15 @@ class QwenChat:
 
         return "".join(output)
 
+    def _strip_unspeakable_symbols(self, text: str) -> str:
+        cleaned = "".join(
+            ch
+            for ch in text
+            if not unicodedata.category(ch).startswith("So")
+            and ch not in {"\ufe0f", "\u200d"}
+        )
+        return cleaned
+
     def _generate_text(self, prompt: str, generation_config: GenerationConfig) -> str:
         inputs = self._tokenize_prompt(prompt)
         output_ids = self.model.generate(**inputs, generation_config=generation_config)
@@ -206,6 +218,7 @@ class QwenChat:
             for chunk in streamer:
                 if chunk:
                     chunk = self._filter_stream_chunk(chunk, filter_state)
+                    chunk = self._strip_unspeakable_symbols(chunk)
                 if chunk:
                     emitted = True
                     yield chunk

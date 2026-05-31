@@ -105,9 +105,28 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _coerce_qdrant_point_id(value: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except (TypeError, ValueError):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
+
+
 def _safe_id(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value).strip("._")
     return cleaned or "anonymous"
+
+
+def _build_heuristic_turn_summary(user_input: str, assistant_answer: str) -> str:
+    user_text = " ".join(user_input.split()).strip()
+    assistant_text = " ".join(assistant_answer.split()).strip()
+    if not user_text:
+        return ""
+    if len(assistant_text) > 180:
+        assistant_text = assistant_text[:177].rstrip() + "..."
+    if assistant_text:
+        return f"User said: {user_text}\nAssistant replied: {assistant_text}"
+    return f"User said: {user_text}"
 
 
 class UserStateStore:
@@ -380,6 +399,9 @@ Important rules:
 11. Use Korean only when the user explicitly asks for Korean or when a brief Korean clarification is necessary.
 12. If the user wants to understand a concept, explain it simply first, then make implementation steps concrete.
 13. Do not unnecessarily ask again about project context that is already available.
+14. Never use emoji, emoticons, decorative symbols, or markdown because this text will be read aloud by TTS.
+15. Do not greet the user again unless the current user input is a greeting.
+16. Keep the answer short enough for live voice conversation: one or two spoken sentences by default.
 
 [User State]
 {json.dumps(user_state or {}, ensure_ascii=False, indent=2)}
@@ -517,7 +539,8 @@ class MemoryService:
         self.state_store = state_store or UserStateStore()
         self.embedding_model = embedding_model or self._load_embedding_model()
         self.vector_store = vector_store or QdrantVectorMemoryStore(vector_size=self.embedding_model.dim)
-        self._queue: Queue[tuple[MemoryWriteJob, Callable[[str], str]]] = Queue()
+        self.use_llm_memory_writer = os.getenv("MEMORY_WRITER_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+        self._queue: Queue[tuple[MemoryWriteJob, Callable[[str], str] | None]] = Queue()
         self._worker = Thread(target=self._run_worker, daemon=True)
         self._worker.start()
 
@@ -544,7 +567,7 @@ class MemoryService:
             logger.info("memory_write_skipped user_id=%s conversation_id=%s", job.user_id, job.conversation_id)
             return
         logger.info("memory_write_enqueued user_id=%s conversation_id=%s", job.user_id, job.conversation_id)
-        self._queue.put((job, memory_writer))
+        self._queue.put((job, memory_writer if self.use_llm_memory_writer else None))
 
     def upsert_embedded_points(self, points: list[dict[str, Any]]) -> int:
         count = 0
@@ -559,7 +582,7 @@ class MemoryService:
             if not text or not isinstance(vector, list):
                 continue
             self.vector_store.upsert(
-                memory_id=str(point.get("id") or uuid.uuid4()),
+                memory_id=_coerce_qdrant_point_id(str(point.get("id") or uuid.uuid4())),
                 user_id=user_id,
                 conversation_id=conversation_id,
                 text=text,
@@ -584,8 +607,12 @@ class MemoryService:
             finally:
                 self._queue.task_done()
 
-    def _handle_job(self, job: MemoryWriteJob, memory_writer: Callable[[str], str]) -> None:
+    def _handle_job(self, job: MemoryWriteJob, memory_writer: Callable[[str], str] | None) -> None:
         logger.info("memory_write_started user_id=%s conversation_id=%s", job.user_id, job.conversation_id)
+        if memory_writer is None:
+            self._handle_heuristic_job(job)
+            return
+
         user_state = self.state_store.load(job.user_id)
         prompt = build_memory_writer_prompt(
             user_state=user_state,
@@ -624,6 +651,24 @@ class MemoryService:
             )
             logger.info("memory_vector_upserted user_id=%s conversation_id=%s importance=%.2f", job.user_id, job.conversation_id, importance)
         logger.info("memory_write_done user_id=%s conversation_id=%s patches=%s", job.user_id, job.conversation_id, len(patch))
+
+    def _handle_heuristic_job(self, job: MemoryWriteJob) -> None:
+        summary = _build_heuristic_turn_summary(job.user_input, job.assistant_answer)
+        if not summary:
+            return
+        self.vector_store.upsert(
+            memory_id=str(uuid.uuid4()),
+            user_id=job.user_id,
+            conversation_id=job.conversation_id,
+            text=summary,
+            embedding=self.embedding_model.embed(summary),
+            metadata={
+                "type": "turn_summary",
+                "source": "conversation_heuristic",
+                "created_at": now_iso(),
+            },
+        )
+        logger.info("memory_write_done user_id=%s conversation_id=%s mode=heuristic", job.user_id, job.conversation_id)
 
 
 def _merge_default_state(data: dict[str, Any]) -> dict[str, Any]:

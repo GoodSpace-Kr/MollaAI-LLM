@@ -46,11 +46,13 @@ class LlmStreamAnswerTests(unittest.TestCase):
 
     def test_generation_config_matches_runtime_safe_sampling_defaults(self) -> None:
         if isinstance(llm.gen_config, dict):
+            self.assertEqual(llm.gen_config["max_new_tokens"], 80)
             self.assertEqual(llm.gen_config["temperature"], 0.6)
             self.assertEqual(llm.gen_config["top_p"], 0.95)
             self.assertEqual(llm.gen_config["top_k"], 20)
             return
         self.assertEqual(llm.gen_config.temperature, 0.6)
+        self.assertEqual(llm.gen_config.max_new_tokens, 80)
         self.assertEqual(llm.gen_config.top_p, 0.95)
         self.assertEqual(llm.gen_config.top_k, 20)
 
@@ -174,6 +176,14 @@ class LlmStreamAnswerTests(unittest.TestCase):
         ]
 
         self.assertEqual("".join(chunks), "\n안녕하세요! 무엇을 도와드릴까요?")
+
+    def test_strip_unspeakable_symbols_removes_emoji(self) -> None:
+        chat = object.__new__(llm.QwenChat)
+
+        self.assertEqual(
+            chat._strip_unspeakable_symbols("😊 Stephen Curry 🏀⚽ is great."),
+            " Stephen Curry  is great.",
+        )
 
 
 if __name__ == "__main__":
