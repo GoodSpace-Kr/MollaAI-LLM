@@ -19,15 +19,27 @@ MODEL_NAME = "ssaann/eng_conversation_sft"
 gen_config = GenerationConfig(
     max_new_tokens=200,
     do_sample=True,
-    temperature=0.7,
-    top_p=0.9,
-    top_k=50,
+    temperature=0.6,
+    top_p=0.95,
+    top_k=20,
+    remove_invalid_values=True,
+    renormalize_logits=True,
+)
+
+memory_gen_config = GenerationConfig(
+    max_new_tokens=260,
+    do_sample=False,
+    temperature=0.0,
+    top_p=1.0,
+    top_k=1,
+    remove_invalid_values=True,
+    renormalize_logits=True,
 )
 
 BASE_SYSTEM_PROMPT = (
-    "You are an English conversation teacher on a live phone call. "
-    "Reply briefly in plain spoken English, only as the teacher, "
-    "and never generate the student's side of the conversation."
+    "You are a friendly spoken English conversation partner and context-aware conversational AI assistant on a live voice call. "
+    "Use the provided user state, retrieved memories, recent conversation, and current input. "
+    "Reply naturally and concisely in the user's language."
 )
 
 
@@ -35,18 +47,19 @@ class QwenChat:
     def __init__(
         self,
         model_name=MODEL_NAME,
-        tok_model=TOK_MODEL_NAME,
+        tok_model=None,
         cache_dir=None,
         system_prompt: str = BASE_SYSTEM_PROMPT,
     ):
         print("🔧 LLM 모델 로딩 중...")
 
         cache_dir = cache_dir or os.getenv("HF_HOME")
+        tokenizer_name = tok_model or model_name
 
-        self.tokenizer = AutoTokenizer.from_pretrained(tok_model)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, extra_special_tokens={})
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
+            torch_dtype="auto",
             device_map="auto",
             cache_dir=cache_dir,
         )
@@ -56,7 +69,7 @@ class QwenChat:
         print("✅ LLM 준비 완료")
 
     def _build_system_prompt(self) -> str:
-        return self.system_prompt
+        return getattr(self, "system_prompt", BASE_SYSTEM_PROMPT)
 
     def _sanitize_history(self, history: list[dict[str, str]] | None) -> list[dict[str, str]]:
         if not history:
@@ -85,12 +98,19 @@ class QwenChat:
         return {key: value.to(model_device) for key, value in inputs.items()}
 
     def _render_prompt(self, messages: list[dict[str, str]]) -> str:
-        return self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
+        try:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except TypeError:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
 
     def get_prompt(self, query: str, history: list[dict[str, str]] | None = None):
         messages = self._build_messages(query, history=history)
@@ -113,9 +133,27 @@ class QwenChat:
             print(traceback.format_exc())
             return response
 
-    def stream_answer(self, query: str, history: list[dict[str, str]] | None = None):
+    def _generate_text(self, prompt: str, generation_config: GenerationConfig) -> str:
+        inputs = self._tokenize_prompt(prompt)
+        output_ids = self.model.generate(**inputs, generation_config=generation_config)
+        input_length = inputs["input_ids"].shape[-1]
+        generated_ids = output_ids[0][input_length:]
+        return self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+    def generate_memory_json(self, prompt_text: str) -> str:
+        messages = [
+            {"role": "system", "content": "You generate strict JSON for memory updates. Output JSON only."},
+            {"role": "user", "content": prompt_text},
+        ]
+        prompt = self._render_prompt(messages)
+        return self._generate_text(prompt, memory_gen_config)
+
+    def stream_answer(self, query: str, history: list[dict[str, str]] | None = None, **_kwargs):
         try:
-            _, prompt = self.get_prompt(query, history=history)
+            try:
+                _, prompt = self.get_prompt(query, history=history)
+            except TypeError:
+                _, prompt = self.get_prompt(query)
             inputs = self._tokenize_prompt(prompt)
             streamer = TextIteratorStreamer(
                 self.tokenizer,
@@ -128,19 +166,26 @@ class QwenChat:
                 "generation_config": gen_config,
                 "streamer": streamer,
             }
+            errors: list[BaseException] = []
 
-            worker = Thread(
-                target=self.model.generate,
-                kwargs=generation_kwargs,
-                daemon=True,
-            )
+            def _generate() -> None:
+                try:
+                    self.model.generate(**generation_kwargs)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            worker = Thread(target=_generate, daemon=True)
             worker.start()
 
+            emitted = False
             for chunk in streamer:
                 if chunk:
+                    emitted = True
                     yield chunk
 
             worker.join()
+            if errors and not emitted:
+                raise errors[0]
         except Exception:
             print("Error in stream_answer()")
             print(traceback.format_exc())
