@@ -90,6 +90,8 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("[User State]", prompt)
         self.assertIn("과거 결정사항 (score=0.82)", prompt)
         self.assertIn("user: AI 프로젝트야", prompt)
+        self.assertIn("Reply in natural, concise spoken English by default.", prompt)
+        self.assertNotIn("한국어로 답한다", prompt)
 
     def test_user_state_store_round_trips_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
