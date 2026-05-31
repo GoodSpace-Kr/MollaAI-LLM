@@ -42,7 +42,7 @@ class LlmHistoryPromptTests(unittest.TestCase):
 
         self.assertEqual(query, "What's my name?")
         self.assertEqual(prompt, "rendered")
-        self.assertEqual(captured_messages[1:], [*history, {"role": "user", "content": "What's my name?"}])
+        self.assertEqual(captured_messages[1:], [*history, {"role": "user", "content": "What's my name?\n/no_think"}])
 
 
 if __name__ == "__main__":

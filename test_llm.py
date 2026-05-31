@@ -46,17 +46,13 @@ class LlmStreamAnswerTests(unittest.TestCase):
 
     def test_generation_config_matches_runtime_safe_sampling_defaults(self) -> None:
         if isinstance(llm.gen_config, dict):
-            self.assertEqual(llm.gen_config["max_new_tokens"], 80)
-            self.assertEqual(llm.gen_config["temperature"], 0.6)
-            self.assertEqual(llm.gen_config["top_p"], 0.95)
-            self.assertEqual(llm.gen_config["top_k"], 20)
+            self.assertEqual(llm.gen_config["max_new_tokens"], 64)
+            self.assertFalse(llm.gen_config["do_sample"])
             return
-        self.assertEqual(llm.gen_config.temperature, 0.6)
-        self.assertEqual(llm.gen_config.max_new_tokens, 80)
-        self.assertEqual(llm.gen_config.top_p, 0.95)
-        self.assertEqual(llm.gen_config.top_k, 20)
+        self.assertEqual(llm.gen_config.max_new_tokens, 64)
+        self.assertFalse(llm.gen_config.do_sample)
 
-    def test_init_uses_finetuned_tokenizer_by_default(self) -> None:
+    def test_init_uses_qwen3_tokenizer_by_default_to_disable_thinking(self) -> None:
         tokenizer_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         model_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
@@ -75,7 +71,7 @@ class LlmStreamAnswerTests(unittest.TestCase):
         with patch.object(llm, "AutoTokenizer", _TokenizerLoader), patch.object(llm, "AutoModelForCausalLM", _ModelLoader):
             llm.QwenChat()
 
-        self.assertEqual(tokenizer_calls[0][0][0], llm.MODEL_NAME)
+        self.assertEqual(tokenizer_calls[0][0][0], llm.TOK_MODEL_NAME)
         self.assertEqual(tokenizer_calls[0][1], {"extra_special_tokens": {}})
         self.assertEqual(model_calls[0][0][0], llm.MODEL_NAME)
         self.assertEqual(model_calls[0][1]["torch_dtype"], "auto")
@@ -142,7 +138,7 @@ class LlmStreamAnswerTests(unittest.TestCase):
 
         self.assertEqual(full_prompt, "hello")
         self.assertEqual(prompt, "prompt-without-enable-thinking")
-        self.assertEqual(captured_messages[1]["content"], "hello")
+        self.assertEqual(captured_messages[1]["content"], "hello\n/no_think")
         self.assertNotIn("<question>", captured_messages[1]["content"])
         self.assertIn("friendly spoken English conversation partner", captured_messages[0]["content"])
 
@@ -163,7 +159,26 @@ class LlmStreamAnswerTests(unittest.TestCase):
         with patch.object(llm, "TextIteratorStreamer", _EmptyStreamer):
             chunks = list(chat.stream_answer("hello", request_id="test"))
 
-        self.assertEqual(chunks, ["오류가 발생했습니다."])
+        self.assertEqual(chunks, ["Sorry, I had a brief issue. Could you say that again?"])
+
+    def test_returns_spoken_fallback_when_stream_is_empty_without_error(self) -> None:
+        chat = object.__new__(llm.QwenChat)
+        chat.tokenizer = object()
+
+        class _SilentModel:
+            device = None
+
+            def generate(self, **_kwargs) -> None:
+                return None
+
+        chat.model = _SilentModel()
+        chat.get_prompt = lambda query: ("prompt", "prompt")
+        chat._tokenize_prompt = lambda prompt: {"input_ids": object()}
+
+        with patch.object(llm, "TextIteratorStreamer", _EmptyStreamer):
+            chunks = list(chat.stream_answer("hello", request_id="test"))
+
+        self.assertEqual(chunks, ["Hi Joshua, I'm here. What would you like to talk about?"])
 
     def test_stream_filter_removes_thinking_blocks_across_chunks(self) -> None:
         chat = object.__new__(llm.QwenChat)

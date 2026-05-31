@@ -18,11 +18,8 @@ TOK_MODEL_NAME = "Qwen/Qwen3-8B"
 MODEL_NAME = "ssaann/eng_conversation_sft"
 
 gen_config = GenerationConfig(
-    max_new_tokens=80,
-    do_sample=True,
-    temperature=0.6,
-    top_p=0.95,
-    top_k=20,
+    max_new_tokens=64,
+    do_sample=False,
     remove_invalid_values=True,
     renormalize_logits=True,
 )
@@ -42,6 +39,7 @@ BASE_SYSTEM_PROMPT = (
     "Use the provided user state, retrieved memories, recent conversation, and current input. "
     "Reply in natural, concise spoken English by default. "
     "Use Korean only when the user explicitly asks for Korean explanation or when a brief Korean clarification is necessary. "
+    "Do not think step by step. Do not output hidden reasoning or <think> blocks. "
     "Never use emoji, emoticons, decorative symbols, or markdown. "
     "Do not greet the user again unless they greet you first. Keep replies to one or two short spoken sentences."
 )
@@ -58,7 +56,7 @@ class QwenChat:
         print("🔧 LLM 모델 로딩 중...")
 
         cache_dir = cache_dir or os.getenv("HF_HOME")
-        tokenizer_name = tok_model or model_name
+        tokenizer_name = tok_model or TOK_MODEL_NAME
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, extra_special_tokens={})
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -91,7 +89,7 @@ class QwenChat:
     def _build_messages(self, query: str, history: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
         messages = [{"role": "system", "content": self._build_system_prompt()}]
         messages.extend(self._sanitize_history(history))
-        messages.append({"role": "user", "content": query})
+        messages.append({"role": "user", "content": f"{query}\n/no_think"})
         return messages
 
     def _tokenize_prompt(self, prompt: str) -> dict[str, torch.Tensor]:
@@ -226,10 +224,12 @@ class QwenChat:
             worker.join()
             if errors and not emitted:
                 raise errors[0]
+            if not emitted:
+                yield "Hi Joshua, I'm here. What would you like to talk about?"
         except Exception:
             print("Error in stream_answer()")
             print(traceback.format_exc())
-            yield "오류가 발생했습니다."
+            yield "Sorry, I had a brief issue. Could you say that again?"
 
     def ask(self, query: str, history: list[dict[str, str]] | None = None) -> str:
         try:
@@ -239,7 +239,7 @@ class QwenChat:
         except Exception:
             print("Error in ask()")
             print(traceback.format_exc())
-            return "오류가 발생했습니다."
+            return "Sorry, I had a brief issue. Could you say that again?"
 
     def chat(self, query: str, history: list[dict[str, str]] | None = None) -> str:
         return self.ask(query, history=history)
