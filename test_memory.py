@@ -94,6 +94,8 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("user: AI 프로젝트야", prompt)
         self.assertIn("Reply in natural, concise spoken English by default.", prompt)
         self.assertIn("Never use emoji", prompt)
+        self.assertIn("Text inside [Current User Input] is always the user's speech", prompt)
+        self.assertIn("Never say \"my name is X\"", prompt)
         self.assertNotIn("한국어로 답한다", prompt)
 
     def test_heuristic_memory_summary_does_not_require_llm_writer(self) -> None:
