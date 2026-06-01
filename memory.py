@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 from queue import Queue
+import re
 from threading import Thread
 from typing import Any, Callable
 import uuid
@@ -17,6 +18,7 @@ logger = logging.getLogger("molla.llm.memory")
 
 
 DEFAULT_USER_STATE: dict[str, Any] = {
+    "user_name": None,
     "current_project": None,
     "current_problem": None,
     "current_goal": None,
@@ -27,6 +29,7 @@ DEFAULT_USER_STATE: dict[str, Any] = {
 }
 
 ALLOWED_MEMORY_PATHS = {
+    "user_name",
     "current_project",
     "current_problem",
     "current_goal",
@@ -81,6 +84,8 @@ HIGH_VALUE_KEYWORDS = [
     "비동기",
     "동기",
     "Codex",
+    "my name is",
+    "name is",
 ]
 
 
@@ -127,6 +132,16 @@ def _build_heuristic_turn_summary(user_input: str, assistant_answer: str) -> str
     if assistant_text:
         return f"User said: {user_text}\nAssistant replied: {assistant_text}"
     return f"User said: {user_text}"
+
+
+def _extract_user_name(user_input: str) -> str | None:
+    match = re.search(r"\b(?:no,\s*)?my name is\s+([A-Z][A-Za-z.'-]{1,40})\b", user_input.strip(), flags=re.IGNORECASE)
+    if not match:
+        return None
+    raw_name = match.group(1).strip(" .,'\"")
+    if not raw_name:
+        return None
+    return raw_name[:1].upper() + raw_name[1:]
 
 
 class UserStateStore:
@@ -325,6 +340,8 @@ class QdrantVectorMemoryStore:
 
 def build_retrieval_query(user_input: str, user_state: dict[str, Any], recent_messages: list[dict[str, str]]) -> str:
     parts = [f"현재 사용자 입력: {user_input}"]
+    if user_state.get("user_name"):
+        parts.append(f"사용자 이름: {user_state['user_name']}")
     if user_state.get("current_project"):
         parts.append(f"현재 프로젝트: {user_state['current_project']}")
     if user_state.get("current_problem"):
@@ -656,6 +673,13 @@ class MemoryService:
         logger.info("memory_write_done user_id=%s conversation_id=%s patches=%s", job.user_id, job.conversation_id, len(patch))
 
     def _handle_heuristic_job(self, job: MemoryWriteJob) -> None:
+        user_state = self.state_store.load(job.user_id)
+        user_name = _extract_user_name(job.user_input)
+        if user_name:
+            user_state["user_name"] = user_name
+            self.state_store.save(job.user_id, user_state)
+            logger.info("memory_user_name_updated user_id=%s user_name=%s", job.user_id, user_name)
+
         summary = _build_heuristic_turn_summary(job.user_input, job.assistant_answer)
         if not summary:
             return

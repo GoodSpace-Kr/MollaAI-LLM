@@ -6,9 +6,12 @@ import unittest
 from memory import (
     DEFAULT_USER_STATE,
     RetrievedMemory,
+    MemoryService,
+    MemoryWriteJob,
     UserStateStore,
     _build_heuristic_turn_summary,
     _coerce_qdrant_point_id,
+    _extract_user_name,
     apply_memory_patch,
     build_answer_prompt,
     build_retrieval_query,
@@ -39,6 +42,11 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("현재 프로젝트: AI 프로젝트", query)
         self.assertIn("메인 LLM: Qwen 8B", query)
         self.assertIn("Qwen 8B를 써.", query)
+
+    def test_build_retrieval_query_includes_user_name(self) -> None:
+        query = build_retrieval_query("What's my name?", {"user_name": "Joshua"}, [])
+
+        self.assertIn("사용자 이름: Joshua", query)
 
     def test_apply_memory_patch_allows_only_high_confidence_allowed_paths(self) -> None:
         updated = apply_memory_patch(
@@ -112,6 +120,37 @@ class MemoryTests(unittest.TestCase):
 
         self.assertNotEqual(coerced, "external-id-123")
         self.assertEqual(len(coerced), 36)
+
+    def test_extract_user_name_from_correction(self) -> None:
+        self.assertEqual(_extract_user_name("No, my name is Joshua."), "Joshua")
+        self.assertEqual(_extract_user_name("my name is alex"), "Alex")
+
+    def test_heuristic_memory_updates_user_name_without_llm_writer(self) -> None:
+        class _NoopVectorStore:
+            def search(self, **_kwargs):
+                return []
+
+            def upsert(self, **_kwargs):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = UserStateStore(tmpdir)
+            service = MemoryService(
+                state_store=store,
+                embedding_model=type("_Embedding", (), {"dim": 8, "embed": lambda self, text: [0.0] * 8})(),
+                vector_store=_NoopVectorStore(),
+            )
+            service._handle_heuristic_job(
+                MemoryWriteJob(
+                    user_id="user-1",
+                    conversation_id="call-1",
+                    user_input="No, my name is Joshua.",
+                    assistant_answer="Your name is Joshua.",
+                    recent_messages=[],
+                )
+            )
+
+            self.assertEqual(store.load("user-1")["user_name"], "Joshua")
 
     def test_user_state_store_round_trips_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
